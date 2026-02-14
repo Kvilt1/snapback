@@ -3,11 +3,49 @@ from collections import defaultdict
 from datetime import date, timedelta
 from pathlib import Path
 
+from tqdm import tqdm
+
 from bitmoji import generate_bitmoji_assets
 
 SNAP_DEFAULTS = {"Content": None, "IsSaved": False, "Media IDs": "", "Type": "snap"}
 SNAP_KEYS = ["From", "Media Type", "Created", "Conversation Title", "IsSender", "Created(microseconds)"]
 TARGET_JSON = {"chat_history.json", "snap_history.json", "friends.json"}
+PHASE_NAMES = ["Extracting zips", "Matching by media ID", "Matching by timestamp", "Writing output", "Fetching avatars"]
+
+
+class Progress:
+    """Two-bar progress display: phase detail on top, overall phases on bottom."""
+    def __init__(self):
+        self._phase = 0
+        self._bar = None
+        self._overall = tqdm(
+            total=len(PHASE_NAMES), unit="phase", position=0, leave=False,
+            desc="Overall", bar_format="{desc}: {bar} {n_fmt}/{total_fmt} phases [{elapsed}]",
+        )
+
+    def phase(self, total, unit="it"):
+        if self._bar:
+            self._bar.close()
+            self._overall.update(1)
+        self._phase += 1
+        desc = PHASE_NAMES[self._phase - 1] if self._phase <= len(PHASE_NAMES) else f"Phase {self._phase}"
+        self._overall.set_description(f"Overall ({desc})")
+        self._overall.refresh()
+        self._bar = tqdm(
+            total=total, unit=unit, delay=0.2, leave=False, position=1,
+            desc=f"  [{self._phase}/{len(PHASE_NAMES)}] {desc}",
+        )
+
+    def update(self, n=1):
+        if self._bar:
+            self._bar.update(n)
+
+    def close(self):
+        if self._bar:
+            self._bar.close()
+            self._overall.update(1)
+            self._bar = None
+        self._overall.close()
 
 
 def get_local_mtime(raw, info):
@@ -29,7 +67,7 @@ def get_local_mtime(raw, info):
     return time.mktime(info.date_time + (0, 0, -1))
 
 
-def extract_zips(input_dir, tmp_dir):
+def extract_zips(input_dir, tmp_dir, progress):
     """Extract json/ and chat_media/ from zips, preserving real timestamps."""
     zips = sorted(input_dir.glob("*.zip"))
     if not zips:
@@ -41,8 +79,9 @@ def extract_zips(input_dir, tmp_dir):
         key=lambda z: int(re.search(r"-(\d+)\.zip$", z.name).group(1)),
     )
 
-    for zf_path in primary + secondary:
-        print(f"Extracting: {zf_path.name}")
+    all_zips = primary + secondary
+    progress.phase(len(all_zips), "zip")
+    for zf_path in all_zips:
         with zipfile.ZipFile(zf_path) as zf, open(zf_path, "rb") as raw:
             for info in zf.infolist():
                 if info.is_dir():
@@ -64,6 +103,7 @@ def extract_zips(input_dir, tmp_dir):
                 dest.write_bytes(zf.read(info.filename))
                 mtime = get_local_mtime(raw, info)
                 os.utime(dest, (mtime, mtime))
+        progress.update(1)
 
 
 def load_display_names(json_dir):
@@ -160,12 +200,13 @@ def build_days(chat_data, snap_data):
     return days, usernames, group_info, group_titles
 
 
-def match_media(days, b_lookup, other_files):
+def match_media(days, b_lookup, other_files, progress):
     """Match media files to messages by ID then by timestamp proximity."""
     total_ids = matched_ids = 0
     matched_b = set()
 
     # Pass 1: Match by media ID
+    progress.phase(len(days), "day")
     for day_convs in days.values():
         for msgs in day_convs.values():
             msgs.sort(key=lambda x: x.get("Created(microseconds)", 0))
@@ -177,6 +218,7 @@ def match_media(days, b_lookup, other_files):
                         m.setdefault("media_filenames", []).append(b_lookup[mid].name)
                         matched_b.add(mid)
                         matched_ids += 1
+        progress.update(1)
 
     # Pass 2: Match remaining files by timestamp proximity
     ts_files = [
@@ -185,6 +227,7 @@ def match_media(days, b_lookup, other_files):
     ] + [(f.name[:10], int(f.stat().st_mtime * 1000), f) for f in other_files]
 
     matched_ts = 0
+    progress.phase(len(ts_files), "file")
     for day, mtime_ms, f in ts_files:
         best, best_diff, best_real = None, float("inf"), float("inf")
         for offset in (0, -1, 1):
@@ -200,6 +243,7 @@ def match_media(days, b_lookup, other_files):
         if best and best_real <= 30_000:
             best.setdefault("media_filenames", []).append(f.name)
             matched_ts += 1
+        progress.update(1)
 
     return total_ids, matched_ids, matched_b, matched_ts, ts_files
 
@@ -216,7 +260,7 @@ def _media_type(ext):
     return "IMAGE"
 
 
-def write_output(days, overlay_pairs, media_dir, out, group_titles, all_media_files):
+def write_output(days, overlay_pairs, media_dir, out, group_titles, all_media_files, progress):
     """Write a single conversations.json per day with stats and orphaned media."""
     days_out = out / "days"
     if days_out.exists():
@@ -230,7 +274,9 @@ def write_output(days, overlay_pairs, media_dir, out, group_titles, all_media_fi
     mapped_names = set()
     total_day_files = 0
 
-    for day, convs in sorted(days.items()):
+    sorted_days = sorted(days.items())
+    progress.phase(len(sorted_days), "day")
+    for day, convs in sorted_days:
         folder = days_out / day
         folder.mkdir(parents=True, exist_ok=True)
 
@@ -328,6 +374,7 @@ def write_output(days, overlay_pairs, media_dir, out, group_titles, all_media_fi
             json.dumps(day_data, indent=2, ensure_ascii=False), encoding="utf-8"
         )
         total_day_files += 1
+        progress.update(1)
 
     return total_day_files, mapped_names
 
@@ -341,7 +388,9 @@ def main():
     input_dir, tmp_dir = Path("input"), Path("_tmp_extract")
     if tmp_dir.exists():
         shutil.rmtree(tmp_dir)
-    extract_zips(input_dir, tmp_dir)
+
+    progress = Progress()
+    extract_zips(input_dir, tmp_dir, progress)
 
     json_dir = tmp_dir / "json"
     media_dir = tmp_dir / "chat_media"
@@ -349,21 +398,22 @@ def main():
     snap_data = json.loads((json_dir / "snap_history.json").read_text(encoding="utf-8"))
 
     owner = find_owner(chat_data, snap_data)
-    print(f"Detected Account Owner: {owner}")
 
     b_lookup, other_files, overlay_pairs = classify_media(media_dir)
     days, usernames, group_info, group_titles = build_days(chat_data, snap_data)
     usernames.add(owner)
 
-    total_ids, matched_ids, matched_b, matched_ts, ts_files = match_media(days, b_lookup, other_files)
+    total_ids, matched_ids, matched_b, matched_ts, ts_files = match_media(days, b_lookup, other_files, progress)
 
     out = Path("output")
     all_media_files = list(b_lookup.values()) + other_files
-    total_files, mapped_names = write_output(days, overlay_pairs, media_dir, out, group_titles, all_media_files)
+    total_files, mapped_names = write_output(days, overlay_pairs, media_dir, out, group_titles, all_media_files, progress)
 
     # Index & Bitmoji
     display_map = load_display_names(json_dir)
-    bitmoji_paths = generate_bitmoji_assets({u for u in usernames if u}, out)
+    valid_usernames = {u for u in usernames if u}
+    progress.phase(len(valid_usernames), "user")
+    bitmoji_paths = generate_bitmoji_assets(valid_usernames, out, progress)
     users = [
         {"username": u, "display_name": display_map.get(u, u), "bitmoji": bitmoji_paths.get(u, f"bitmoji/{u}.svg")}
         for u in sorted(usernames) if u
@@ -372,10 +422,12 @@ def main():
         json.dumps({"account_owner": owner, "users": users, "groups": group_info}, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
+    progress.close()
 
     # Stats
+    print(f"Detected Account Owner: {owner}")
     total_media = len(b_lookup) + len(other_files)
-    print(f"\nDone. {total_files} day files across {len(days)} days.")
+    print(f"Done. {total_files} day files across {len(days)} days.")
     print(f"Json Media IDs:      {pct(matched_ids, total_ids)}")
     print(f"Media file IDs:      {pct(len(matched_b), len(b_lookup))}")
     print(f"Timestamp mapping:   {pct(matched_ts, len(ts_files))}")
