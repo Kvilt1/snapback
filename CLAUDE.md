@@ -12,8 +12,8 @@ Snapback is a Python data processing pipeline that extracts, parses, and organiz
 # Run the full pipeline (no build step needed)
 python splitter.py
 
-# Dependencies: requests, urllib3 (no requirements.txt - install manually)
-pip install requests urllib3
+# Dependencies (no requirements.txt - install manually)
+pip install requests urllib3 tqdm
 ```
 
 There are no tests, linting, or CI/CD configurations.
@@ -33,17 +33,16 @@ The pipeline flows through `splitter.py:main()` in sequential phases:
 
 ## Module Responsibilities
 
-- **`splitter.py`** (384 lines): Core pipeline orchestration — extraction, parsing, organization, media matching, output generation
-- **`bitmoji.py`** (220 lines): Thread-safe avatar fetching with `ThreadPoolExecutor`, retry logic, and `FallbackGenerator` that produces deterministic ghost SVGs using SHA256-based HSL colors
-- **`config.py`** (15 lines): Constants (`TARGET_AVATAR_SIZE`, `MAX_BITMOJI_WORKERS`, `BITMOJI_API_TIMEOUT`, etc.) and `sanitize_filename()`
+- **`splitter.py`**: Core pipeline orchestration — extraction, parsing, organization, media matching, output generation. Contains `Progress` class for dual tqdm progress bars (phase detail + overall phase tracker). Constants (`TIMESTAMP_MATCH_THRESHOLD`, `MEDIA_PENALTY`, `PROGRESS_DELAY`) are defined at module level
+- **`bitmoji.py`**: Thread-safe avatar fetching with `ThreadPoolExecutor` and deterministic colored-ghost SVG fallback using SHA256-based HSL colors. Accepts optional `progress` parameter for unified progress tracking
 
 ## Key Design Decisions
 
 - **Two-pass media matching**: ID-based first, timestamp-proximity fallback second — handles both structured and ambiguous media references
-- **Deterministic fallback avatars**: Username → SHA256 → HSL color with golden angle separation ensures reproducible, visually distinct colors
-- **Thread-safe color assignment**: `FallbackGenerator` uses `threading.Lock` to track used hues across concurrent workers
+- **Deterministic fallback avatars**: Username → SHA256 → HSL color ensures reproducible, visually distinct colors
 - **Groups detected by pattern**: Conversation IDs containing `-` indicate group chats
 - **Entire history in memory**: No streaming/incremental processing — works for typical personal account sizes
+- **Dual progress bars**: `Progress` class in `splitter.py` manages two tqdm bars — a per-phase detail bar (position 1, teal) and an overall phase counter (position 0, purple). Uses `delay=0.2` to skip rendering for instant phases, `leave=False` so bars vanish before final stats print. Phase names are defined in `PHASE_NAMES` constant
 
 ## Data Flow
 
