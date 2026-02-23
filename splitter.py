@@ -1,7 +1,7 @@
 import colorsys, hashlib, json, os, re, shutil, struct, sys, time, xml.etree.ElementTree as ET, zipfile
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import requests
@@ -162,7 +162,7 @@ def match_media(days, media_dir):
     matched = 0
     for f in tqdm(media_files, desc="Matching media", leave=False):
         day, mtime_ms = f.name[:10], int(f.stat().st_mtime * 1000)
-        best, best_diff, best_real = None, float("inf"), float("inf")
+        best, best_diff = None, float("inf")
         for offset in (0, -1, 1):
             target = str(date.fromisoformat(day) + timedelta(offset))
             for msgs in days.get(target, {}).values():
@@ -170,8 +170,8 @@ def match_media(days, media_dir):
                     real_diff = abs(m.get("Created(microseconds)", 0) - mtime_ms)
                     ranked_diff = real_diff + len(m.get("media_filenames", [])) * MEDIA_PENALTY
                     if ranked_diff < best_diff:
-                        best, best_diff, best_real = m, ranked_diff, real_diff
-        if best and best_real <= TIMESTAMP_MATCH_THRESHOLD:
+                        best, best_diff = m, ranked_diff
+        if best:
             best.setdefault("media_filenames", []).append(f.name)
             matched += 1
 
@@ -229,11 +229,13 @@ def _collect_orphans(day, media_by_day, day_mapped, folder):
             orphan_dir = folder / "orphaned"
             orphan_dir.mkdir(parents=True, exist_ok=True)
             shutil.copy2(f, orphan_dir / fname)
+            mtime_utc = datetime.fromtimestamp(f.stat().st_mtime, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
             orphaned.append({
                 "path": f"orphaned/{fname}",
                 "filename": fname,
                 "type": _media_type(ext),
                 "extension": ext,
+                "mtime_utc": mtime_utc,
             })
     return orphaned
 
@@ -242,7 +244,7 @@ def write_output(days, overlay_pairs, media_dir, out, group_titles, all_media_fi
     """Write a single conversations.json per day with stats and orphaned media."""
     days_out = out / "days"
     if days_out.exists():
-        shutil.rmtree(days_out)
+        shutil.rmtree(days_out, ignore_errors=True)
 
     media_by_day = defaultdict(dict)
     for f in all_media_files:
@@ -324,7 +326,7 @@ def _fetch_avatar(username):
         return username, _fallback_svg(username)
 
 
-def generate_bitmoji_assets(usernames, output_root):
+def generate_bitmoji_assets(usernames, output_root, _counter=None):
     """Fetch and save Bitmoji avatars, returning {username: relative_path}."""
     if not usernames:
         return {}
@@ -333,20 +335,24 @@ def generate_bitmoji_assets(usernames, output_root):
     paths = {}
     with ThreadPoolExecutor(max_workers=min(8, len(usernames))) as pool:
         futures = [pool.submit(_fetch_avatar, u) for u in usernames]
-        with tqdm(total=len(usernames), desc="Fetching avatars", leave=False) as pbar:
-            for f in as_completed(futures):
-                username, svg = f.result()
-                filename = f"{username}.svg"
-                (bitmoji_dir / filename).write_text(svg, encoding="utf-8")
-                paths[username] = f"bitmoji/{filename}"
-                pbar.update(1)
+        for f in as_completed(futures):
+            username, svg = f.result()
+            filename = f"{username}.svg"
+            (bitmoji_dir / filename).write_text(svg, encoding="utf-8")
+            paths[username] = f"bitmoji/{filename}"
+            if _counter is not None:
+                _counter[0] += 1
     return paths
 
 
 def main():
     input_dir, tmp_dir = Path("input"), Path("_tmp_extract")
-    if tmp_dir.exists():
-        shutil.rmtree(tmp_dir)
+    out = Path("output")
+
+    # Clear both tmp and output dirs before each run
+    for d in (tmp_dir, out):
+        if d.exists():
+            shutil.rmtree(d, ignore_errors=True)
 
     extract_zips(input_dir, tmp_dir)
 
@@ -359,15 +365,36 @@ def main():
     days, usernames, group_info, group_titles = build_days(chat_data, snap_data)
     usernames.add(owner)
 
+    # Start avatar fetching immediately — I/O-bound, runs free in the background
+    valid_usernames = {u for u in usernames if u}
+    _avatar_count, _avatar_paths = [0], {}
+    _bg_pool = ThreadPoolExecutor(max_workers=1)
+    _avatar_fut = _bg_pool.submit(
+        lambda: _avatar_paths.update(generate_bitmoji_assets(valid_usernames, out, _avatar_count))
+    )
+
     media_files, overlay_pairs, matched = match_media(days, media_dir)
 
-    out = Path("output")
     total_files = write_output(days, overlay_pairs, media_dir, out, group_titles, media_files)
 
     # Index & Bitmoji
     display_map = load_display_names(json_dir)
-    valid_usernames = {u for u in usernames if u}
-    bitmoji_paths = generate_bitmoji_assets(valid_usernames, out)
+
+    # Show progress bar only if still fetching, starting at current progress
+    if not _avatar_fut.done():
+        n = len(valid_usernames)
+        with tqdm(total=n, desc="Fetching avatars", initial=_avatar_count[0], leave=False) as pbar:
+            prev = _avatar_count[0]
+            while not _avatar_fut.done():
+                cur = _avatar_count[0]
+                pbar.update(cur - prev)
+                prev = cur
+                time.sleep(0.1)
+            pbar.update(_avatar_count[0] - prev)
+
+    _avatar_fut.result()  # re-raise any exception from the thread
+    _bg_pool.shutdown(wait=False)
+    bitmoji_paths = _avatar_paths
     users = [
         {"username": u, "display_name": display_map.get(u, u), "bitmoji": bitmoji_paths.get(u, f"bitmoji/{u}.svg")}
         for u in sorted(usernames) if u
@@ -380,7 +407,7 @@ def main():
     print(f"Done. {total_files} day files across {len(days)} days.")
     print(f"Media matched: {matched}/{len(media_files)} ({matched/max(len(media_files),1)*100:.1f}%)")
 
-    shutil.rmtree(tmp_dir)
+    shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,4 @@
-__pycache__/
-input/
-output/
-.DS_Store
-CLAUDE.md
-test_bitmoji.py
+*
+!splitter.py
+!ghost.svg
+!.gitignore
