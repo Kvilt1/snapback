@@ -10,36 +10,12 @@ from tqdm import tqdm
 SNAP_DEFAULTS = {"Content": None, "IsSaved": False, "Media IDs": "", "Type": "snap"}
 SNAP_KEYS = ["From", "Media Type", "Created", "Conversation Title", "IsSender", "Created(microseconds)"]
 TARGET_JSON = {"chat_history.json", "snap_history.json", "friends.json"}
-PHASE_NAMES = ["Extracting zips", "Matching media", "Writing output", "Fetching avatars"]
 TIMESTAMP_MATCH_THRESHOLD = 30_000  # max ms proximity for timestamp matching
 MEDIA_PENALTY = 5_000               # penalty per existing match to spread media
 AVATAR_SIZE = 54
 _GHOST_SVG = Path(__file__).parent / "ghost.svg"
 GHOST_PATH = ET.parse(_GHOST_SVG).find(".//{http://www.w3.org/2000/svg}path").get("d")
 SVG_NS = {"svg": "http://www.w3.org/2000/svg", "xlink": "http://www.w3.org/1999/xlink"}
-
-
-class Progress:
-    """Single cumulative progress bar across all phases."""
-    def __init__(self):
-        self._phase = 0
-        self._bar = tqdm(
-            total=0, unit="it", leave=False, ascii=".:#", colour="#00d4aa",
-            bar_format="{desc}  {bar}  {n_fmt}/{total_fmt} [{elapsed}]",
-        )
-
-    def phase(self, total):
-        self._phase += 1
-        desc = PHASE_NAMES[self._phase - 1] if self._phase <= len(PHASE_NAMES) else f"Phase {self._phase}"
-        self._bar.total += total
-        self._bar.set_description(f"[{self._phase}/{len(PHASE_NAMES)}] {desc}")
-        self._bar.refresh()
-
-    def update(self, n=1):
-        self._bar.update(n)
-
-    def close(self):
-        self._bar.close()
 
 
 def get_mtime(info):
@@ -55,7 +31,7 @@ def get_mtime(info):
     return time.mktime(info.date_time + (0, 0, -1))
 
 
-def extract_zips(input_dir, tmp_dir, progress):
+def extract_zips(input_dir, tmp_dir):
     """Extract json/ and chat_media/ from zips, preserving real timestamps."""
     zips = sorted(input_dir.glob("*.zip"))
     if not zips:
@@ -68,8 +44,7 @@ def extract_zips(input_dir, tmp_dir, progress):
     )
 
     all_zips = primary + secondary
-    progress.phase(len(all_zips))
-    for zf_path in all_zips:
+    for zf_path in tqdm(all_zips, desc="Extracting zips", leave=False):
         with zipfile.ZipFile(zf_path) as zf:
             for info in zf.infolist():
                 if info.is_dir():
@@ -91,7 +66,6 @@ def extract_zips(input_dir, tmp_dir, progress):
                 dest.write_bytes(zf.read(info.filename))
                 mtime = get_mtime(info)
                 os.utime(dest, (mtime, mtime))
-        progress.update(1)
 
 
 def load_display_names(json_dir):
@@ -156,7 +130,7 @@ def build_days(chat_data, snap_data):
     return days, usernames, group_info, group_titles
 
 
-def match_media(days, media_dir, progress):
+def match_media(days, media_dir):
     """Scan media, pair overlays by mtime bucket, match all files to messages by timestamp."""
     media_files, overlay_files = [], []
     for f in (media_dir.iterdir() if media_dir.exists() else []):
@@ -186,8 +160,7 @@ def match_media(days, media_dir, progress):
             msgs.sort(key=lambda x: x.get("Created(microseconds)", 0))
 
     matched = 0
-    progress.phase(len(media_files))
-    for f in media_files:
+    for f in tqdm(media_files, desc="Matching media", leave=False):
         day, mtime_ms = f.name[:10], int(f.stat().st_mtime * 1000)
         best, best_diff, best_real = None, float("inf"), float("inf")
         for offset in (0, -1, 1):
@@ -201,7 +174,6 @@ def match_media(days, media_dir, progress):
         if best and best_real <= TIMESTAMP_MATCH_THRESHOLD:
             best.setdefault("media_filenames", []).append(f.name)
             matched += 1
-        progress.update(1)
 
     return media_files, overlay_pairs, matched
 
@@ -266,7 +238,7 @@ def _collect_orphans(day, media_by_day, day_mapped, folder):
     return orphaned
 
 
-def write_output(days, overlay_pairs, media_dir, out, group_titles, all_media_files, progress):
+def write_output(days, overlay_pairs, media_dir, out, group_titles, all_media_files):
     """Write a single conversations.json per day with stats and orphaned media."""
     days_out = out / "days"
     if days_out.exists():
@@ -277,8 +249,7 @@ def write_output(days, overlay_pairs, media_dir, out, group_titles, all_media_fi
         media_by_day[f.name[:10]][f.name] = f
 
     sorted_days = sorted(days.items())
-    progress.phase(len(sorted_days))
-    for day, convs in sorted_days:
+    for day, convs in tqdm(sorted_days, desc="Writing output", leave=False):
         folder = days_out / day
         folder.mkdir(parents=True, exist_ok=True)
 
@@ -311,7 +282,6 @@ def write_output(days, overlay_pairs, media_dir, out, group_titles, all_media_fi
             "conversations": conversations,
             "orphanedMedia": {"orphaned_media_count": len(orphaned), "orphaned_media": orphaned},
         }, indent=2, ensure_ascii=False), encoding="utf-8")
-        progress.update(1)
 
     return len(sorted_days)
 
@@ -354,7 +324,7 @@ def _fetch_avatar(username):
         return username, _fallback_svg(username)
 
 
-def generate_bitmoji_assets(usernames, output_root, progress=None):
+def generate_bitmoji_assets(usernames, output_root):
     """Fetch and save Bitmoji avatars, returning {username: relative_path}."""
     if not usernames:
         return {}
@@ -363,13 +333,13 @@ def generate_bitmoji_assets(usernames, output_root, progress=None):
     paths = {}
     with ThreadPoolExecutor(max_workers=min(8, len(usernames))) as pool:
         futures = [pool.submit(_fetch_avatar, u) for u in usernames]
-        for f in as_completed(futures):
-            username, svg = f.result()
-            filename = f"{username}.svg"
-            (bitmoji_dir / filename).write_text(svg, encoding="utf-8")
-            paths[username] = f"bitmoji/{filename}"
-            if progress is not None:
-                progress.update(1)
+        with tqdm(total=len(usernames), desc="Fetching avatars", leave=False) as pbar:
+            for f in as_completed(futures):
+                username, svg = f.result()
+                filename = f"{username}.svg"
+                (bitmoji_dir / filename).write_text(svg, encoding="utf-8")
+                paths[username] = f"bitmoji/{filename}"
+                pbar.update(1)
     return paths
 
 
@@ -378,8 +348,7 @@ def main():
     if tmp_dir.exists():
         shutil.rmtree(tmp_dir)
 
-    progress = Progress()
-    extract_zips(input_dir, tmp_dir, progress)
+    extract_zips(input_dir, tmp_dir)
 
     json_dir = tmp_dir / "json"
     media_dir = tmp_dir / "chat_media"
@@ -390,16 +359,15 @@ def main():
     days, usernames, group_info, group_titles = build_days(chat_data, snap_data)
     usernames.add(owner)
 
-    media_files, overlay_pairs, matched = match_media(days, media_dir, progress)
+    media_files, overlay_pairs, matched = match_media(days, media_dir)
 
     out = Path("output")
-    total_files = write_output(days, overlay_pairs, media_dir, out, group_titles, media_files, progress)
+    total_files = write_output(days, overlay_pairs, media_dir, out, group_titles, media_files)
 
     # Index & Bitmoji
     display_map = load_display_names(json_dir)
     valid_usernames = {u for u in usernames if u}
-    progress.phase(len(valid_usernames))
-    bitmoji_paths = generate_bitmoji_assets(valid_usernames, out, progress)
+    bitmoji_paths = generate_bitmoji_assets(valid_usernames, out)
     users = [
         {"username": u, "display_name": display_map.get(u, u), "bitmoji": bitmoji_paths.get(u, f"bitmoji/{u}.svg")}
         for u in sorted(usernames) if u
@@ -408,8 +376,6 @@ def main():
         json.dumps({"account_owner": owner, "users": users, "groups": group_info}, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
-    progress.close()
-
     print(f"Detected Account Owner: {owner}")
     print(f"Done. {total_files} day files across {len(days)} days.")
     print(f"Media matched: {matched}/{len(media_files)} ({matched/max(len(media_files),1)*100:.1f}%)")

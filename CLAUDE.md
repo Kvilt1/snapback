@@ -33,8 +33,7 @@ The pipeline flows through `splitter.py:main()` in sequential phases:
 
 ## Module Responsibilities
 
-- **`splitter.py`**: Core pipeline orchestration — extraction, parsing, organization, media matching, output generation. Contains `Progress` class for dual tqdm progress bars (phase detail + overall phase tracker). Constants (`TIMESTAMP_MATCH_THRESHOLD`, `MEDIA_PENALTY`, `PROGRESS_DELAY`) are defined at module level
-- **`bitmoji.py`**: Thread-safe avatar fetching with `ThreadPoolExecutor` and deterministic colored-ghost SVG fallback using SHA256-based HSL colors. Accepts optional `progress` parameter for unified progress tracking
+- **`splitter.py`**: Core pipeline orchestration — extraction, parsing, organization, media matching, output generation, and avatar fetching. Each pipeline function uses inline `tqdm` progress bars. Constants (`TIMESTAMP_MATCH_THRESHOLD`, `MEDIA_PENALTY`) are defined at module level
 
 ## Key Design Decisions
 
@@ -42,7 +41,7 @@ The pipeline flows through `splitter.py:main()` in sequential phases:
 - **Deterministic fallback avatars**: Username → SHA256 → HSL color ensures reproducible, visually distinct colors
 - **Groups detected by pattern**: Conversation IDs containing `-` indicate group chats
 - **Entire history in memory**: No streaming/incremental processing — works for typical personal account sizes
-- **Dual progress bars**: `Progress` class in `splitter.py` manages two tqdm bars — a per-phase detail bar (position 1, teal) and an overall phase counter (position 0, purple). Uses `delay=0.2` to skip rendering for instant phases, `leave=False` so bars vanish before final stats print. Phase names are defined in `PHASE_NAMES` constant
+- **Inline progress bars**: Each pipeline function wraps its main loop with `tqdm(..., leave=False)` for clean, idiomatic progress tracking
 
 ## Data Flow
 
