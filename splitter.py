@@ -104,6 +104,9 @@ def build_days(chat_data, snap_data):
         participants, title = set(), None
         for m in msgs:
             m["Type"] = "message"
+            ts_ms = m.get("Created(microseconds)")
+            if ts_ms is not None:
+                m["Created"] = _format_ts(ts_ms)
             days[m["Created"][:10]][c_id].append(m)
             if f := m.get("From"):
                 usernames.add(f)
@@ -117,7 +120,11 @@ def build_days(chat_data, snap_data):
 
     for c_id, msgs in snap_data.items():
         for m in msgs:
-            days[m["Created"][:10]][c_id].append({k: m.get(k) for k in SNAP_KEYS} | SNAP_DEFAULTS)
+            snap_m = {k: m.get(k) for k in SNAP_KEYS} | SNAP_DEFAULTS
+            ts_ms = snap_m.get("Created(microseconds)")
+            if ts_ms is not None:
+                snap_m["Created"] = _format_ts(ts_ms)
+            days[snap_m["Created"][:10]][c_id].append(snap_m)
             if f := m.get("From"):
                 usernames.add(f)
             if "-" in c_id and c_id not in group_titles:
@@ -178,6 +185,13 @@ def match_media(days, media_dir):
     return media_files, overlay_pairs, matched
 
 
+def _format_ts(ts_ms):
+    """Format millisecond epoch as 'YYYY-MM-DD HH:MM:SS.mmm UTC'."""
+    ts_ms = int(ts_ms)
+    dt = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
+    return dt.strftime(f"%Y-%m-%d %H:%M:%S.{ts_ms % 1000:03d} UTC")
+
+
 def _media_type(ext):
     """Map file extension to a media type string."""
     ext = ext.lower().lstrip(".")
@@ -192,11 +206,11 @@ def _media_type(ext):
 
 def _copy_message_media(m, media_dir, folder, overlay_pairs):
     """Copy media files for a single message, return set of copied filenames."""
-    fnames = m.get("media_filenames", [])
+    fnames = m.pop("media_filenames", [])
     if not fnames:
         return set()
 
-    rel_paths, copied = [], set()
+    media_items, copied = [], set()
     for fname in fnames:
         src = media_dir / fname
         if not src.exists():
@@ -208,14 +222,14 @@ def _copy_message_media(m, media_dir, folder, overlay_pairs):
             dest.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, dest / fname)
             shutil.copy2(overlay_pairs[fname], dest / overlay_pairs[fname].name)
-            rel_paths.append(f"media/{src.stem}")
+            media_items.append({"filename": f"media/{src.stem}/"})
         else:
             (folder / "media").mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, folder / "media" / fname)
-            rel_paths.append(f"media/{fname}")
+            media_items.append({"filename": f"media/{fname}"})
 
-    if rel_paths:
-        m["media_locations"] = rel_paths
+    if media_items:
+        m["media"] = media_items
 
     return copied
 
@@ -240,7 +254,7 @@ def _collect_orphans(day, media_by_day, day_mapped, folder):
     return orphaned
 
 
-def write_output(days, overlay_pairs, media_dir, out, group_titles, all_media_files):
+def write_output(days, overlay_pairs, media_dir, out, group_titles, all_media_files, owner, group_members):
     """Write a single conversations.json per day with stats and orphaned media."""
     days_out = out / "days"
     if days_out.exists():
@@ -262,28 +276,71 @@ def write_output(days, overlay_pairs, media_dir, out, group_titles, all_media_fi
         for c_id, msgs in convs.items():
             for m in msgs:
                 copied = _copy_message_media(m, media_dir, folder, overlay_pairs)
+                m.pop("Created(microseconds)", None)
+                m.pop("Media IDs", None)
+                m.pop("IsSaved", None)
+                m.pop("IsSender", None)
+                if m.get("From") == owner:
+                    m.pop("From")
+                if m.get("Conversation Title") is None:
+                    m.pop("Conversation Title", None)
+                if m.get("Content") is None:
+                    m.pop("Content", None)
                 day_mapped.update(copied)
                 day_media_count += len(copied)
 
             is_group = "-" in c_id
-            conv_entry = {"id": c_id, "conversation_id": c_id,
-                          "conversation_type": "group" if is_group else "individual", "messages": msgs}
             if is_group:
-                conv_entry["group_name"] = group_titles.get(c_id, c_id)
+                # Latest title seen on this day (messages already sorted chronologically)
+                day_title = next(
+                    (m.get("Conversation Title") for m in reversed(msgs) if m.get("Conversation Title")),
+                    group_titles.get(c_id, c_id),
+                )
+                # Count distinct title runs to decide whether per-message titles are needed
+                runs, prev = [], None
+                for m in msgs:
+                    t = m.get("Conversation Title")
+                    if t is not None and t != prev:
+                        runs.append(t)
+                        prev = t
+
+                if len(runs) <= 1:
+                    # Title never changed — strip all per-message titles, top-level is enough
+                    for m in msgs:
+                        m.pop("Conversation Title", None)
+                else:
+                    # Title changed mid-day — keep only the first message of each run
+                    prev = None
+                    for m in msgs:
+                        t = m.get("Conversation Title")
+                        if t is None:
+                            pass
+                        elif t != prev:
+                            prev = t  # first occurrence of this title — keep it
+                        else:
+                            m.pop("Conversation Title", None)  # same run — strip
+
+            conv_entry = {"id": c_id, "conversation_type": "group" if is_group else "individual"}
+            if is_group:
+                conv_entry["conversation_title"] = day_title
+            conv_entry["messages"] = msgs
             conversations.append(conv_entry)
 
         orphaned = _collect_orphans(day, media_by_day, day_mapped, folder)
 
-        (folder / "conversations.json").write_text(json.dumps({
+        doc = {
             "date": day,
+            "owner": owner,
             "stats": {
                 "conversationCount": len(conversations),
                 "messageCount": sum(len(msgs) for msgs in convs.values()),
                 "mediaCount": day_media_count,
             },
             "conversations": conversations,
-            "orphanedMedia": {"orphaned_media_count": len(orphaned), "orphaned_media": orphaned},
-        }, indent=2, ensure_ascii=False), encoding="utf-8")
+        }
+        if orphaned:
+            doc["orphanedMedia"] = {"orphaned_media_count": len(orphaned), "orphaned_media": orphaned}
+        (folder / "conversations.json").write_text(json.dumps(doc, indent=2, ensure_ascii=False), encoding="utf-8")
 
     return len(sorted_days)
 
@@ -365,36 +422,46 @@ def main():
     days, usernames, group_info, group_titles = build_days(chat_data, snap_data)
     usernames.add(owner)
 
-    # Start avatar fetching immediately — I/O-bound, runs free in the background
     valid_usernames = {u for u in usernames if u}
-    _avatar_count, _avatar_paths = [0], {}
-    _bg_pool = ThreadPoolExecutor(max_workers=1)
-    _avatar_fut = _bg_pool.submit(
-        lambda: _avatar_paths.update(generate_bitmoji_assets(valid_usernames, out, _avatar_count))
-    )
+    no_bitmoji = "--no-bitmoji" in sys.argv
+    if not no_bitmoji:
+        # Start avatar fetching immediately — I/O-bound, runs free in the background
+        _avatar_count, _avatar_paths = [0], {}
+        _bg_pool = ThreadPoolExecutor(max_workers=1)
+        _avatar_fut = _bg_pool.submit(
+            lambda: _avatar_paths.update(generate_bitmoji_assets(valid_usernames, out, _avatar_count))
+        )
 
     media_files, overlay_pairs, matched = match_media(days, media_dir)
 
-    total_files = write_output(days, overlay_pairs, media_dir, out, group_titles, media_files)
+    total_files = write_output(days, overlay_pairs, media_dir, out, group_titles, media_files, owner)
 
     # Index & Bitmoji
     display_map = load_display_names(json_dir)
 
-    # Show progress bar only if still fetching, starting at current progress
-    if not _avatar_fut.done():
-        n = len(valid_usernames)
-        with tqdm(total=n, desc="Fetching avatars", initial=_avatar_count[0], leave=False) as pbar:
-            prev = _avatar_count[0]
-            while not _avatar_fut.done():
-                cur = _avatar_count[0]
-                pbar.update(cur - prev)
-                prev = cur
-                time.sleep(0.1)
-            pbar.update(_avatar_count[0] - prev)
+    if no_bitmoji:
+        bitmoji_dir = out / "bitmoji"
+        bitmoji_dir.mkdir(parents=True, exist_ok=True)
+        bitmoji_paths = {}
+        for u in valid_usernames:
+            (bitmoji_dir / f"{u}.svg").write_text(_fallback_svg(u), encoding="utf-8")
+            bitmoji_paths[u] = f"bitmoji/{u}.svg"
+    else:
+        # Show progress bar only if still fetching, starting at current progress
+        if not _avatar_fut.done():
+            n = len(valid_usernames)
+            with tqdm(total=n, desc="Fetching avatars", initial=_avatar_count[0], leave=False) as pbar:
+                prev = _avatar_count[0]
+                while not _avatar_fut.done():
+                    cur = _avatar_count[0]
+                    pbar.update(cur - prev)
+                    prev = cur
+                    time.sleep(0.1)
+                pbar.update(_avatar_count[0] - prev)
 
-    _avatar_fut.result()  # re-raise any exception from the thread
-    _bg_pool.shutdown(wait=False)
-    bitmoji_paths = _avatar_paths
+        _avatar_fut.result()  # re-raise any exception from the thread
+        _bg_pool.shutdown(wait=False)
+        bitmoji_paths = _avatar_paths
     users = [
         {"username": u, "display_name": display_map.get(u, u), "bitmoji": bitmoji_paths.get(u, f"bitmoji/{u}.svg")}
         for u in sorted(usernames) if u
