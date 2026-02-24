@@ -264,6 +264,7 @@ def write_output(days, overlay_pairs, media_dir, out, group_titles, all_media_fi
     for f in all_media_files:
         media_by_day[f.name[:10]][f.name] = f
 
+    day_usernames = {}
     sorted_days = sorted(days.items())
     for day, convs in tqdm(sorted_days, desc="Writing output", leave=False):
         folder = days_out / day
@@ -323,8 +324,20 @@ def write_output(days, overlay_pairs, media_dir, out, group_titles, all_media_fi
             conv_entry = {"id": c_id, "conversation_type": "group" if is_group else "individual"}
             if is_group:
                 conv_entry["conversation_title"] = day_title
+                conv_entry["members"] = group_members.get(c_id, [])
             conv_entry["messages"] = msgs
             conversations.append(conv_entry)
+
+        # Collect active usernames for this day
+        day_active = {owner}
+        for c_id, msgs in convs.items():
+            for m in msgs:
+                frm = m.get("From")
+                if frm:
+                    day_active.add(frm)
+            if "-" in c_id:
+                day_active.update(group_members.get(c_id, []))
+        day_usernames[day] = sorted(u for u in day_active if u)
 
         orphaned = _collect_orphans(day, media_by_day, day_mapped, folder)
 
@@ -342,7 +355,7 @@ def write_output(days, overlay_pairs, media_dir, out, group_titles, all_media_fi
             doc["orphanedMedia"] = {"orphaned_media_count": len(orphaned), "orphaned_media": orphaned}
         (folder / "conversations.json").write_text(json.dumps(doc, indent=2, ensure_ascii=False), encoding="utf-8")
 
-    return len(sorted_days)
+    return len(sorted_days), day_usernames
 
 
 def _fallback_svg(username):
@@ -420,6 +433,7 @@ def main():
 
     owner = find_owner(chat_data, snap_data)
     days, usernames, group_info, group_titles = build_days(chat_data, snap_data)
+    group_members = {g["group_id"]: g["members"] for g in group_info}
     usernames.add(owner)
 
     valid_usernames = {u for u in usernames if u}
@@ -434,7 +448,7 @@ def main():
 
     media_files, overlay_pairs, matched = match_media(days, media_dir)
 
-    total_files = write_output(days, overlay_pairs, media_dir, out, group_titles, media_files, owner)
+    total_files, day_usernames = write_output(days, overlay_pairs, media_dir, out, group_titles, media_files, owner, group_members)
 
     # Index & Bitmoji
     display_map = load_display_names(json_dir)
@@ -462,14 +476,27 @@ def main():
         _avatar_fut.result()  # re-raise any exception from the thread
         _bg_pool.shutdown(wait=False)
         bitmoji_paths = _avatar_paths
-    users = [
-        {"username": u, "display_name": display_map.get(u, u), "bitmoji": bitmoji_paths.get(u, f"bitmoji/{u}.svg")}
-        for u in sorted(usernames) if u
-    ]
-    (out / "index.json").write_text(
-        json.dumps({"account_owner": owner, "users": users, "groups": group_info}, indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
+    days_out = out / "days"
+    for day, day_users_list in day_usernames.items():
+        day_folder = days_out / day
+        day_bitmoji_dir = day_folder / "bitmoji"
+        day_bitmoji_dir.mkdir(exist_ok=True)
+        users_for_day = []
+        for u in day_users_list:
+            src = out / "bitmoji" / f"{u}.svg"
+            if src.exists():
+                shutil.copy2(src, day_bitmoji_dir / f"{u}.svg")
+            users_for_day.append({
+                "username": u,
+                "display_name": display_map.get(u, u),
+                "bitmoji": f"bitmoji/{u}.svg",
+            })
+        (day_folder / "users.json").write_text(
+            json.dumps(users_for_day, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    shutil.rmtree(out / "bitmoji", ignore_errors=True)
+
     print(f"Detected Account Owner: {owner}")
     print(f"Done. {total_files} day files across {len(days)} days.")
     print(f"Media matched: {matched}/{len(media_files)} ({matched/max(len(media_files),1)*100:.1f}%)")
