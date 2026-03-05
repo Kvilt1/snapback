@@ -1,4 +1,4 @@
-# Plástur
+# Snapback
 
 A local Snapchat archive viewer. Processes your Snapchat data export into a browsable day-by-day chat viewer with a stats dashboard.
 
