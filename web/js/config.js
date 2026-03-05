@@ -1,5 +1,4 @@
 // web/js/config.js
-import { json } from '../conversation.js';
 
 // ── Data Interpreter Logic ───────────────────────────────────────────────────
 
@@ -18,8 +17,8 @@ function transformMessage(msg, memberMap) {
   const mediaItem   = msg.media?.[0];
   const mediaFile   = mediaItem?.filename;
   const overlayFile = mediaItem?.overlay;
-  let src        = mediaFile ? './' + mediaFile : null;
-  let overlaySrc = overlayFile ? './' + overlayFile : null;
+  let src        = mediaFile ?? null;
+  let overlaySrc = overlayFile ?? null;
   let isMp4      = src && src.endsWith('.mp4');
 
   // Fallback for legacy "media/UUID/" directory references (old splitter output)
@@ -90,22 +89,24 @@ function buildConversation(conv) {
     result.bgColor = toColor(conv.id);
   } else {
     result.name = conv.members[0].display_name;
-    result.bitmoji = './' + conv.members[0].bitmoji;
+    result.bitmoji = conv.members[0].bitmoji;
   }
 
   return result;
 }
 
-// ── Exports ──────────────────────────────────────────────────────────────────
+// ── Export ────────────────────────────────────────────────────────────────────
 
-export const headerConfig = {
-  date:          json.date,
-  conversations: json.stats.conversationCount,
-  messages:      json.stats.messageCount,
-  media:         json.stats.mediaCount,
-};
-
-export const prevDay = json.prev_day ?? null;
-export const nextDay = json.next_day ?? null;
-
-export const conversationConfig = json.conversations.map(buildConversation);
+export function buildConfig(json) {
+  return {
+    headerConfig: {
+      date:          json.date,
+      conversations: json.stats.conversationCount,
+      messages:      json.stats.messageCount,
+      media:         json.stats.mediaCount,
+    },
+    prevDay: json.prev_day ?? null,
+    nextDay: json.next_day ?? null,
+    conversationConfig: json.conversations.map(buildConversation),
+  };
+}

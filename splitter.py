@@ -204,32 +204,30 @@ def _media_type(ext):
     return "IMAGE"
 
 
-def _copy_message_media(m, media_dir, folder, overlay_pairs):
+def _copy_message_media(m, media_dir, out_media_dir, overlay_pairs):
     """Copy media files for a single message, return set of copied filenames."""
     fnames = m.pop("media_filenames", [])
     if not fnames:
         return set()
 
+    out_media_dir.mkdir(parents=True, exist_ok=True)
     media_items, copied = [], set()
     for fname in fnames:
         src = media_dir / fname
         if not src.exists():
             continue
         copied.add(fname)
+        shutil.copy2(src, out_media_dir / fname)
 
         if fname in overlay_pairs:
-            dest = folder / "media" / src.stem
-            dest.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, dest / fname)
-            shutil.copy2(overlay_pairs[fname], dest / overlay_pairs[fname].name)
-            overlay_fname = overlay_pairs[fname].name
+            overlay_src = overlay_pairs[fname]
+            overlay_fname = overlay_src.name
+            shutil.copy2(overlay_src, out_media_dir / overlay_fname)
             media_items.append({
-                "filename": f"media/{src.stem}/{fname}",
-                "overlay":  f"media/{src.stem}/{overlay_fname}",
+                "filename": f"media/{fname}",
+                "overlay":  f"media/{overlay_fname}",
             })
         else:
-            (folder / "media").mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, folder / "media" / fname)
             media_items.append({"filename": f"media/{fname}"})
 
     if media_items:
@@ -238,18 +236,17 @@ def _copy_message_media(m, media_dir, folder, overlay_pairs):
     return copied
 
 
-def _collect_orphans(day, media_by_day, day_mapped, folder):
+def _collect_orphans(day, media_by_day, day_mapped, out_media_dir):
     """Detect and copy orphaned media for a day, returning the orphan list."""
     orphaned = []
     for fname, f in sorted(media_by_day.get(day, {}).items()):
         if fname not in day_mapped:
             ext = f.suffix.lstrip(".")
-            orphan_dir = folder / "orphaned"
-            orphan_dir.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(f, orphan_dir / fname)
+            out_media_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(f, out_media_dir / fname)
             mtime_utc = datetime.fromtimestamp(f.stat().st_mtime, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
             orphaned.append({
-                "path": f"orphaned/{fname}",
+                "path": f"media/{fname}",
                 "filename": fname,
                 "type": _media_type(ext),
                 "extension": ext,
@@ -259,35 +256,32 @@ def _collect_orphans(day, media_by_day, day_mapped, folder):
 
 
 def write_output(days, overlay_pairs, media_dir, out, group_titles, all_media_files, owner, group_members, display_map):
-    """Write a single conversations.json per day with stats, members, and orphaned media."""
+    """Write a single .js per day with stats, members, and orphaned media; emit index.json manifest."""
+    out_media_dir = out / "media"
     days_out = out / "days"
     if days_out.exists():
         shutil.rmtree(days_out, ignore_errors=True)
+    days_out.mkdir(parents=True, exist_ok=True)
 
     web_dir = Path(__file__).parent / "web"
-    _WEB_SKIP = {"conversation.js", ".DS_Store", "dashboard.html"}
 
     media_by_day = defaultdict(dict)
     for f in all_media_files:
         media_by_day[f.name[:10]][f.name] = f
 
-    day_usernames = {}
     all_conv_ids = set()
     total_messages = total_images = total_videos = total_audio = 0
     activity_data = {}
     sorted_days = sorted(days.items())
     sorted_day_keys = [d for d, _ in sorted_days]
     for i, (day, convs) in enumerate(tqdm(sorted_days, desc="Writing output", leave=False)):
-        folder = days_out / day
-        folder.mkdir(parents=True, exist_ok=True)
-
         conversations = []
         day_media_count = 0
         day_mapped = set()
 
         for c_id, msgs in convs.items():
             for m in msgs:
-                copied = _copy_message_media(m, media_dir, folder, overlay_pairs)
+                copied = _copy_message_media(m, media_dir, out_media_dir, overlay_pairs)
                 m.pop("Created(microseconds)", None)
                 m.pop("Media IDs", None)
                 m.pop("IsSaved", None)
@@ -335,7 +329,7 @@ def write_output(days, overlay_pairs, media_dir, out, group_titles, all_media_fi
             conv_entry = {"id": c_id, "conversation_type": "group" if is_group else "individual"}
             if is_group:
                 conv_entry["conversation_title"] = day_title
-            
+
             # Build the members array (excluding the owner)
             raw_members = group_members.get(c_id, []) if is_group else [c_id]
             rich_members = [
@@ -346,7 +340,7 @@ def write_output(days, overlay_pairs, media_dir, out, group_titles, all_media_fi
                 }
                 for u in sorted(set(raw_members)) if u and u != owner
             ]
-            
+
             conv_entry["members"] = rich_members
             conv_entry["messages"] = msgs
             conversations.append(conv_entry)
@@ -366,26 +360,13 @@ def write_output(days, overlay_pairs, media_dir, out, group_titles, all_media_fi
         total_audio    += day_aud
         activity_data[day] = day_msg_count
 
-        # Collect active usernames for this day
-        day_active = {owner}
-        for c_id, msgs in convs.items():
-            for m in msgs:
-                frm = m.get("From")
-                if frm:
-                    day_active.add(frm)
-            if "-" in c_id:
-                day_active.update(group_members.get(c_id, []))
-            else:
-                day_active.add(c_id)
-        day_usernames[day] = sorted(u for u in day_active if u)
-
-        orphaned = _collect_orphans(day, media_by_day, day_mapped, folder)
+        orphaned = _collect_orphans(day, media_by_day, day_mapped, out_media_dir)
 
         doc = {
             "date": day,
             "owner": owner,
-            "prev_day": f"../{sorted_day_keys[i - 1]}/index.html" if i > 0 else None,
-            "next_day": f"../{sorted_day_keys[i + 1]}/index.html" if i < len(sorted_day_keys) - 1 else None,
+            "prev_day": sorted_day_keys[i - 1] if i > 0 else None,
+            "next_day": sorted_day_keys[i + 1] if i < len(sorted_day_keys) - 1 else None,
             "stats": {
                 "conversationCount": len(conversations),
                 "messageCount": sum(len(msgs) for msgs in convs.values()),
@@ -396,20 +377,13 @@ def write_output(days, overlay_pairs, media_dir, out, group_titles, all_media_fi
         if orphaned:
             doc["orphanedMedia"] = {"orphaned_media_count": len(orphaned), "orphaned_media": orphaned}
         js_content = "export const json = " + json.dumps(doc, indent=2, ensure_ascii=False) + ";\n"
-        (folder / "conversation.js").write_text(js_content, encoding="utf-8")
+        (days_out / f"{day}.js").write_text(js_content, encoding="utf-8")
 
-        for item in web_dir.iterdir():
-            if item.name in _WEB_SKIP:
-                continue
-            dest = folder / item.name
-            if item.is_dir():
-                shutil.copytree(item, dest, dirs_exist_ok=True)
-            else:
-                shutil.copy2(item, dest)
-
+    # Write index.js manifest (days list + dashboard data)
+    index_data: dict = {"days": sorted_day_keys}
     if sorted_days:
         most_active = max(activity_data, key=activity_data.get)
-        dashboard_data = {
+        index_data.update({
             "owner": owner,
             "stats": {
                 "days": len(sorted_days),
@@ -426,16 +400,13 @@ def write_output(days, overlay_pairs, media_dir, out, group_titles, all_media_fi
             "firstDay": sorted_day_keys[0],
             "lastDay": sorted_day_keys[-1],
             "activityData": activity_data,
-        }
-        dashboard_tmpl = (web_dir / "dashboard.html").read_text(encoding="utf-8")
-        dashboard_html = (
-            dashboard_tmpl
-            .replace("/*DASHBOARD_DATA*/null", json.dumps(dashboard_data, ensure_ascii=False))
-            .replace("your_username", owner)
-        )
-        (out / "dashboard.html").write_text(dashboard_html, encoding="utf-8")
+        })
+    (days_out / "index.js").write_text(
+        "export const index = " + json.dumps(index_data, ensure_ascii=False) + ";\n",
+        encoding="utf-8",
+    )
 
-    return len(sorted_days), day_usernames
+    return len(sorted_days)
 
 
 def _fallback_svg(username):
@@ -531,17 +502,15 @@ def main():
     # Load display names BEFORE write_output so we can use them to build the members list
     display_map = load_display_names(json_dir)
 
-    total_files, day_usernames = write_output(
+    total_files = write_output(
         days, overlay_pairs, media_dir, out, group_titles, media_files, owner, group_members, display_map
     )
 
     if no_bitmoji:
         bitmoji_dir = out / "bitmoji"
         bitmoji_dir.mkdir(parents=True, exist_ok=True)
-        bitmoji_paths = {}
         for u in valid_usernames:
             (bitmoji_dir / f"{u}.svg").write_text(_fallback_svg(u), encoding="utf-8")
-            bitmoji_paths[u] = f"bitmoji/{u}.svg"
     else:
         # Show progress bar only if still fetching, starting at current progress
         if not _avatar_fut.done():
@@ -557,20 +526,18 @@ def main():
 
         _avatar_fut.result()  # re-raise any exception from the thread
         _bg_pool.shutdown(wait=False)
-        bitmoji_paths = _avatar_paths
-        
-    days_out = out / "days"
-    for day, day_users_list in day_usernames.items():
-        day_folder = days_out / day
-        day_bitmoji_dir = day_folder / "bitmoji"
-        day_bitmoji_dir.mkdir(exist_ok=True)
-        for u in day_users_list:
-            src = out / "bitmoji" / f"{u}.svg"
-            if src.exists():
-                shutil.copy2(src, day_bitmoji_dir / f"{u}.svg")
 
-    # Clean up the master bitmoji folder now that they've been distributed
-    shutil.rmtree(out / "bitmoji", ignore_errors=True)
+    # Copy web/ once to output/ root (bitmoji and days stay where they are)
+    web_dir = Path(__file__).parent / "web"
+    _WEB_SKIP = {"conversation.js", ".DS_Store"}
+    for item in web_dir.iterdir():
+        if item.name in _WEB_SKIP:
+            continue
+        dest = out / item.name
+        if item.is_dir():
+            shutil.copytree(item, dest, dirs_exist_ok=True)
+        else:
+            shutil.copy2(item, dest)
 
     print(f"Detected Account Owner: {owner}")
     print(f"Done. {total_files} day files across {len(days)} days.")

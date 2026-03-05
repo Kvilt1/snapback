@@ -221,7 +221,7 @@
   <div class="header">
     <div class="header-inner">
       <h1>Snapchat Archive Dashboard</h1>
-      <p>Archive for your_username</p>
+      <p id="archive-owner"></p>
     </div>
   </div>
 
@@ -360,11 +360,10 @@
 
   </div><!-- /main -->
 
-  <script>
-  const DASHBOARD_DATA = /*DASHBOARD_DATA*/null;
-
-  const D = DASHBOARD_DATA;
+  <script type="module">
+  import { index as D } from './days/index.js';
   const S = D.stats;
+  document.getElementById('archive-owner').textContent = 'Archive for ' + D.owner;
 
   /* ── Stat cards (order: DAYS [0], CONVERSATIONS [1], MESSAGES [2], MEDIA [3]) ── */
   const cards = document.querySelectorAll('.stat-card');
@@ -390,18 +389,18 @@
   document.querySelector('.active-day-count').textContent =
     mad.count ? mad.count.toLocaleString() + ' messages' : '\u2014';
   document.querySelector('.btn-accent').onclick = function () {
-    if (mad.date) window.location.href = 'days/' +mad.date + '/index.html';
+    if (mad.date) window.location.href = 'index.html#' + mad.date;
   };
 
   /* ── Quick Actions ── */
   const btns = document.querySelectorAll('.btn-secondary');
   btns[0].textContent = D.firstDay ? 'Go to First Day (' + D.firstDay + ')' : 'Go to First Day';
   btns[0].onclick = function () {
-    if (D.firstDay) window.location.href = 'days/' +D.firstDay + '/index.html';
+    if (D.firstDay) window.location.href = 'index.html#' + D.firstDay;
   };
   btns[1].textContent = D.lastDay ? 'Go to Last Day (' + D.lastDay + ')' : 'Go to Last Day';
   btns[1].onclick = function () {
-    if (D.lastDay) window.location.href = 'days/' +D.lastDay + '/index.html';
+    if (D.lastDay) window.location.href = 'index.html#' + D.lastDay;
   };
 
   /* ── Heatmap helpers ── */
@@ -491,7 +490,7 @@
       cell.title = dateStr + ': ' + count + ' message' + (count === 1 ? '' : 's');
       if (count > 0) {
         cell.onclick = (function (ds) {
-          return function () { window.location.href = 'days/' +ds + '/index.html'; };
+          return function () { window.location.href = 'index.html#' + ds; };
         }(dateStr));
       }
       dayGrid.appendChild(cell);

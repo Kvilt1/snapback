@@ -934,3 +934,91 @@ body {
 @media (min-width: 1280px) {
   .xl\:grid-cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 }
+
+/* ── Date Picker ─────────────────────────────────────────────────────────── */
+#date-picker-popup {
+  background: #1C1C1E;
+  border: 1px solid #3A3A3C;
+  border-radius: 14px;
+  padding: 16px;
+  width: 280px;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.6);
+}
+
+.dp-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+  gap: 4px;
+}
+
+.dp-nav-btn {
+  background: transparent;
+  border: none;
+  color: #EBEBF5;
+  font-size: 18px;
+  line-height: 1;
+  padding: 4px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s;
+  flex-shrink: 0;
+}
+.dp-nav-btn:hover:not(:disabled) { background: #2C2C2E; }
+.dp-nav-btn:disabled { color: #48484A; cursor: default; }
+
+.dp-month-label {
+  flex: 1;
+  text-align: center;
+  color: #EBEBF5;
+  font-size: 14px;
+  font-weight: 600;
+  font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  white-space: nowrap;
+}
+
+.dp-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+}
+
+.dp-wday {
+  text-align: center;
+  font-size: 11px;
+  font-weight: 500;
+  color: #8E8E93;
+  padding: 4px 0;
+  font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+}
+
+.dp-day {
+  text-align: center;
+  font-size: 13px;
+  font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  border-radius: 6px;
+  padding: 5px 0;
+  line-height: 1.4;
+  border: 1px solid transparent;
+}
+
+
+.dp-available {
+  color: #EBEBF5;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.dp-available:hover { background: #2C2C2E; }
+
+.dp-unavailable {
+  color: #48484A;
+  cursor: default;
+}
+
+.dp-selected {
+  color: #FFFC00;
+  border-color: #FFFC00;
+  font-weight: 600;
+  cursor: default;
+}

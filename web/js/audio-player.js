@@ -272,6 +272,11 @@ export class AudioPlayer {
     const display   = this.currentTime > 0 ? remaining : this.duration;
     this._timeEl.textContent = fmtAudio(display);
   }
+
+  destroy() {
+    if (this._animId) cancelAnimationFrame(this._animId);
+    if (this._audio) { this._audio.pause(); this._audio.src = ''; }
+  }
 }
 
 document.addEventListener('mouseup', () => audioPlayers.forEach(p => p._onMouseUp()));
@@ -285,4 +290,9 @@ export function initAudioPlayers() {
       container: el,
     });
   });
+}
+
+export function stopAllAudioPlayers() {
+  audioPlayers.forEach(p => p.destroy());
+  audioPlayers.length = 0;
 }

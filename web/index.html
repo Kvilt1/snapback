@@ -271,6 +271,32 @@
     </div>
   </div>
   
+  <!-- Date Picker -->
+  <div id="date-picker" style="display:none; position:fixed; inset:0; z-index:400; align-items:flex-start; justify-content:center; padding-top:72px; background:rgba(0,0,0,0.5);">
+    <div id="date-picker-popup">
+      <div class="dp-nav">
+        <button id="dp-prev-year"  class="dp-nav-btn" title="Previous year">«</button>
+        <button id="dp-prev-month" class="dp-nav-btn" title="Previous month">‹</button>
+        <span   id="dp-month-label" class="dp-month-label"></span>
+        <button id="dp-next-month" class="dp-nav-btn" title="Next month">›</button>
+        <button id="dp-next-year"  class="dp-nav-btn" title="Next year">»</button>
+      </div>
+      <div id="dp-grid" class="dp-grid">
+        <div class="dp-wday">Su</div>
+        <div class="dp-wday">Mo</div>
+        <div class="dp-wday">Tu</div>
+        <div class="dp-wday">We</div>
+        <div class="dp-wday">Th</div>
+        <div class="dp-wday">Fr</div>
+        <div class="dp-wday">Sa</div>
+      </div>
+    </div>
+  </div>
+
+  <div id="day-loading" style="display:none; position:fixed; inset:0; z-index:300; background:rgba(0,0,0,0.6); align-items:center; justify-content:center; color:#fff; font-size:18px; font-family:-apple-system,BlinkMacSystemFont,system-ui,sans-serif;">
+    Loading…
+  </div>
+
   <script type="module" src="./js/main.js"></script>
 </body>
 
